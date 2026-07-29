@@ -164,7 +164,7 @@ async def initialize_test_environment():
     # Launch browser (we do not open tabs yet, they will load dynamically)
     browser_instance = await exit_stack.enter_async_context(
         AsyncCamoufox(
-            headless="virtual",
+            headless=True,
             main_world_eval=True,
             humanize=True,
             window=(1036, 703)
