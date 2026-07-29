@@ -1,0 +1,23 @@
+name: camoufox-env
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.12
+  - xorg-xvfb
+  - gtk3
+  - alsa-lib
+  - dbus
+  - dbus-glib
+  - xorg-libxcomposite
+  - xorg-libxcursor
+  - xorg-libxdamage
+  - xorg-libxi
+  - xorg-libxrandr
+  - xorg-libxtst
+  - xorg-libxext
+  - mesa
+  - nss
+  - pip
+  - pip:
+    - -r requirements.txt
