@@ -1,20 +1,7 @@
-import os
-import subprocess
-
-# Force the server to install Xvfb and GUI packages right before the app starts
-try:
-    print("Ensuring Xvfb and dependencies are installed...", flush=True)
-    subprocess.run(
-        "apt-get update && apt-get install -y --no-install-recommends xvfb libgtk-3-0 libdbus-glib-1-2 libxt6 libasound2 libx11-xcb1 libxcomposite1 libxcursor1 libxdamage1 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 libegl1 libgl1-mesa-dri libgbm1 fonts-liberation ca-certificates",
-        shell=True, check=True
-    )
-except Exception as e:
-    print(f"Note: Could not install dependencies via Python script: {e}")
-
 import asyncio
 from contextlib import AsyncExitStack
-from quart import Quart, jsonify, request
 from camoufox.async_api import AsyncCamoufox
+from quart import Quart, jsonify, request
 
 app = Quart(__name__)
 
