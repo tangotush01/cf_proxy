@@ -8,7 +8,7 @@ dependencies:
   - gtk3
   - alsa-lib
   - dbus
-  - dbus-glib
+  - glib
   - xorg-libxcomposite
   - xorg-libxcursor
   - xorg-libxdamage
