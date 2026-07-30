@@ -2,9 +2,10 @@ name: camoufox-env
 channels:
   - conda-forge
   - nodefaults
+  - main
 dependencies:
   - python=3.12
-  - xorg-xvfb
+  - xorg-xvfb-server
   - gtk3
   - alsa-lib
   - dbus
