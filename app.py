@@ -1,6 +1,11 @@
 import asyncio
 from contextlib import AsyncExitStack
 from quart import Quart, jsonify, request
+import os
+import sys
+
+conda_lib = os.path.join(sys.prefix, "lib")
+os.environ["LD_LIBRARY_PATH"] = f"{conda_lib}:{os.environ.get('LD_LIBRARY_PATH', '')}"
 from camoufox.async_api import AsyncCamoufox
 
 app = Quart(__name__)
