@@ -1,8 +1,10 @@
 import asyncio
-from contextlib import AsyncExitStack
-from quart import Quart, jsonify, request
+import time
 import os
 import sys
+import psutil
+from contextlib import AsyncExitStack
+from quart import Quart, jsonify, request
 
 conda_lib = os.path.join(sys.prefix, "lib")
 os.environ["LD_LIBRARY_PATH"] = f"{conda_lib}:{os.environ.get('LD_LIBRARY_PATH', '')}"
@@ -10,17 +12,19 @@ from camoufox.async_api import AsyncCamoufox
 
 app = Quart(__name__)
 
+# Configurable memory threshold (in percentage)
+MEMORY_THRESHOLD_PERCENT = 80.0
+
 # Global runtime states
 exit_stack = None
 browser_instance = None
 
-# Tracks open tabs: { "normalized_url": { "page": page_object, "sitekey": "current_sitekey" } }
+# Tracks open tabs: { "normalized_url": { "page": page_object, "sitekey": "current_sitekey", "last_used": float } }
 active_pages = {}
 
-# Locks to prevent race conditions on concurrent requests to the same tab: { "normalized_url": asyncio.Lock() }
+# Locks to prevent race conditions on concurrent requests to the same tab
 page_locks = {}
 
-# Exposes a configurable initialization function on the page's global window scope
 INJECTION_SCRIPT_TEMPLATE = """
 window.initializeSandbox = function(sitekey) {
     document.body.innerHTML = `
@@ -52,7 +56,6 @@ window.initializeSandbox = function(sitekey) {
         }
     };
 
-    // Clean up any stale scripts to prevent collisions
     const oldScript = document.getElementById('turnstile-script');
     if (oldScript) oldScript.remove();
 
@@ -65,11 +68,52 @@ window.initializeSandbox = function(sitekey) {
 };
 """
 
+async def cleanup_idle_pages(current_url=None):
+    """
+    Checks memory usage and closes the least recently used (LRU) inactive tabs
+    if system memory exceeds MEMORY_THRESHOLD_PERCENT.
+    """
+    mem_usage = psutil.virtual_memory().percent
+    if mem_usage < MEMORY_THRESHOLD_PERCENT:
+        return
+
+    print(f"Memory threshold exceeded ({mem_usage}% >= {MEMORY_THRESHOLD_PERCENT}%). Initiating cleanup...")
+
+    # Sort tabs by least recently used
+    sorted_pages = sorted(
+        active_pages.items(),
+        key=lambda item: item[1].get("last_used", 0)
+    )
+
+    for url, page_data in sorted_pages:
+        # Skip the page currently handling the active request
+        if url == current_url:
+            continue
+
+        lock = page_locks.get(url)
+        
+        # Only close tabs that are not actively locked by another request
+        if lock and not lock.locked():
+            async with lock:
+                try:
+                    print(f"Closing idle tab for URL: {url}")
+                    await page_data["page"].close()
+                except Exception as e:
+                    print(f"Error closing page {url}: {e}")
+                finally:
+                    active_pages.pop(url, None)
+                    page_locks.pop(url, None)
+
+            # Re-check memory; stop cleanup if usage has dropped below threshold
+            if psutil.virtual_memory().percent < MEMORY_THRESHOLD_PERCENT:
+                print("Memory dropped below threshold. Stopping cleanup.")
+                break
+
+
 @app.route('/get-token')
 async def get_token():
     global browser_instance, active_pages, page_locks
     
-    # Extract query parameters
     raw_url = request.args.get('url')
     sitekey = request.args.get('sitekey')
     
@@ -79,20 +123,19 @@ async def get_token():
             "message": "Missing required query parameters: 'url' and 'sitekey'."
         }), 400
 
-    # Normalize URL scheme for Playwright navigation
     url = raw_url if raw_url.startswith(('http://', 'https://')) else f"https://{raw_url}"
 
-    # Initialize a lock for this specific URL to prevent overlapping click tasks
+    # Check and free up memory before allocating new browser tab resources
+    await cleanup_idle_pages(current_url=url)
+
     if url not in page_locks:
         page_locks[url] = asyncio.Lock()
 
-    # Process request inside the URL-specific lock
     async with page_locks[url]:
         try:
             page_data = active_pages.get(url)
             
             if not page_data:
-                # If the URL is not open, open a new page/tab
                 print(f"Opening a new tab for: {url}")
                 page = await browser_instance.new_page()
                 
@@ -105,11 +148,16 @@ async def get_token():
                 print(f"Initializing Turnstile with sitekey: {sitekey}")
                 await page.evaluate(f"mw:window.initializeSandbox('{sitekey}');")
                 
-                # Keep track of the active page object and its active sitekey
-                active_pages[url] = {"page": page, "sitekey": sitekey}
+                active_pages[url] = {
+                    "page": page, 
+                    "sitekey": sitekey, 
+                    "last_used": time.time()
+                }
             else:
                 page = page_data["page"]
-                # If the page exists but the requested sitekey changed, re-initialize
+                # Update timestamp on activity
+                page_data["last_used"] = time.time()
+                
                 if page_data["sitekey"] != sitekey:
                     print(f"Sitekey changed from {page_data['sitekey']} to {sitekey}. Re-initializing...")
                     await page.evaluate(f"mw:window.initializeSandbox('{sitekey}');")
@@ -117,7 +165,6 @@ async def get_token():
                 else:
                     print(f"Reusing existing open tab for: {url}")
 
-            # Reset the widget state
             await page.evaluate("mw:window.resetWidget();")
             
             timeout = 30
@@ -126,7 +173,6 @@ async def get_token():
             token = None
 
             while elapsed < timeout:
-                # Calculate coordinates of the container in the current tab
                 box = await page.evaluate("""
                     () => {
                         const el = document.querySelector('#turnstile-container');
@@ -148,13 +194,16 @@ async def get_token():
                 await asyncio.sleep(poll_interval)
                 elapsed += poll_interval
 
+            # Update timestamp after request completion
+            if url in active_pages:
+                active_pages[url]["last_used"] = time.time()
+
             if token:
                 return jsonify({"status": "success", "token": token})
             else:
                 return jsonify({"status": "timeout", "message": f"The challenge on {url} was not solved within the limit."}), 408
 
         except Exception as e:
-            # If a tab breaks or crashes, remove it from the tracking cache
             if url in active_pages:
                 del active_pages[url]
             return jsonify({"status": "error", "message": str(e)}), 500
